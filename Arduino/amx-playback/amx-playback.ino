@@ -29,16 +29,16 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
-#include <SerialFlash.h>
 
 AudioPlaySdWav           playWav1;
-// Use one of these 3 output types: Digital I2S, Digital S/PDIF, or Analog DAC
 AudioOutputI2S           audioOutput;
-//AudioOutputSPDIF       audioOutput;
-//AudioOutputAnalog      audioOutput;
+AudioInputI2S            i2s2;           //xy=105,63
+AudioRecordQueue         queue1;         //xy=281,63
 AudioConnection          patchCord1(playWav1, 0, audioOutput, 0);
-AudioConnection          patchCord2(playWav1, 1, audioOutput, 1);
+AudioConnection          patchCord2(i2s2, 0, queue1, 0);
 AudioControlSGTL5000     sgtl5000_1;
+
+const int myInput = AUDIO_INPUT_LINEIN;
 
 // Use these with the audio adaptor board
 #define SDCARD_CS_PIN    10
@@ -49,18 +49,21 @@ AudioControlSGTL5000     sgtl5000_1;
 //#define SDCARD_CS_PIN    4
 //#define SDCARD_MOSI_PIN  11
 //#define SDCARD_SCK_PIN   13
+// The file where data is recorded
+File frec;
 
 void setup() {
   Serial.begin(9600);
 
   // Audio connections require memory to work.  For more
   // detailed information, see the MemoryAndCpuUsage example
-  AudioMemory(8);
+  AudioMemory(110);
 
   // Comment these out if not using the audio adaptor board.
   // This may wait forever if the SDA & SCL pins lack
   // pullup resistors
   sgtl5000_1.enable();
+  sgtl5000_1.inputSelect(myInput);
   sgtl5000_1.volume(0.5);
 
   SPI.setMOSI(SDCARD_MOSI_PIN);
@@ -72,6 +75,9 @@ void setup() {
       delay(500);
     }
   }
+
+  playFile("SDTEST1.wav");  // filenames are always uppercase 8.3 format
+  delay(5000);
 }
 
 void playFile(const char *filename)
@@ -81,23 +87,67 @@ void playFile(const char *filename)
 
   // Start playing the file.  This sketch continues to
   // run while the file plays.
+  startRecording();
   playWav1.play(filename);
 
   // A brief delay for the library read WAV info
   delay(5);
-
+  
   // Simply wait for the file to finish playing.
   while (playWav1.isPlaying()) {
-    // uncomment these lines if you audio shield
-    // has the optional volume pot soldered
-    //float vol = analogRead(15);
-    //vol = vol / 1024;
-    // sgtl5000_1.volume(vol);
+    // record wav
+    continueRecording();
   }
+  stopRecording();
 }
 
 
 void loop() {
-  playFile("SPERMWHALE.WAV");  // filenames are always uppercase 8.3 format
-  delay(5000);
+  Serial.println("Done");
+  while(1);
+}
+
+void startRecording() {
+  Serial.println("startRecording");
+  if (SD.exists("RECORD.RAW")) {
+    // The SD library writes new data to the end of the
+    // file, so to start a new recording, the old file
+    // must be deleted before new data is written.
+    SD.remove("RECORD.RAW");
+  }
+  frec = SD.open("RECORD.RAW", FILE_WRITE);
+  if (frec) {
+    queue1.begin();
+  }
+}
+
+#define NREC 20
+byte buffer[NREC*512];
+void continueRecording() {
+  if (queue1.available() >= NREC * 2) {
+    // Fetch 2 blocks (or multiples) from the audio library and copy
+    // into a 512 byte buffer.  micro SD disk access
+    // is most efficient when full (or multiple of) 512 byte sector size
+    // writes are used.
+    for(int ii=0;ii<NREC;ii++)
+    { byte *ptr = buffer+ii*512;
+      memcpy(ptr, queue1.readBuffer(), 256);
+      queue1.freeBuffer();
+      memcpy(ptr+256, queue1.readBuffer(), 256);
+      queue1.freeBuffer();
+    }
+
+    frec.write(buffer, NREC*512);
+  }
+}
+
+void stopRecording() {
+  Serial.println("stopRecording");
+  queue1.end();
+  while (queue1.available() > 0) {
+    frec.write((byte*)queue1.readBuffer(), 256);
+    queue1.freeBuffer();
+  }
+  frec.close();
+
 }
